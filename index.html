@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>K-평균 군집화 시뮬레이터 (심화)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Pretendard', sans-serif;
+            background-color: #f8fafc;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #graph-canvas {
+            touch-action: none;
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.02);
+            background-image: 
+                linear-gradient(to right, #f1f5f9 1px, transparent 1px),
+                linear-gradient(to bottom, #f1f5f9 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+        /* 버튼 비활성화 상태 트랜지션 */
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+    </style>
+</head>
+<body class="text-slate-800 flex flex-col h-screen overflow-hidden">
+
+    <header class="bg-white shadow-sm p-3 md:p-4 z-10 shrink-0">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <h1 class="text-lg md:text-2xl font-bold text-slate-800 flex items-center gap-2">
+                <span>🟢</span> 군집 학습 (K-Means) 시뮬레이터
+            </h1>
+            <button id="reset-btn" class="bg-slate-100 text-slate-600 hover:bg-slate-200 px-3 py-1.5 rounded-lg font-bold transition-colors text-sm">
+                🔄 새로고침
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-grow flex flex-col max-w-4xl mx-auto w-full p-3 md:p-4 gap-3 md:gap-4 h-full relative">
+        
+        <!-- 설명 패널 및 컨트롤 버튼 -->
+        <div class="bg-white border-2 border-indigo-100 rounded-xl p-4 shadow-sm shrink-0 flex flex-col gap-3">
+            <div class="flex items-center gap-2">
+                <span id="step-badge" class="inline-block bg-indigo-100 text-indigo-700 text-xs md:text-sm font-bold px-2 py-1 rounded">
+                    준비 단계
+                </span>
+                <!-- 범례 (사각형 표시용) -->
+                <span id="legend-square" class="hidden text-xs font-semibold text-rose-500 bg-rose-50 px-2 py-1 rounded border border-rose-100 items-center gap-1">
+                    ◼ 소속 변경됨
+                </span>
+            </div>
+            
+            <p id="instruction-text" class="text-sm md:text-base font-semibold text-slate-700 leading-relaxed min-h-[3rem]">
+                데이터 준비: 흩어져 있는 데이터들이 있습니다.
+            </p>
+            
+            <div class="flex gap-2 w-full mt-1">
+                <button id="prev-btn" class="flex-1 bg-slate-200 text-slate-700 hover:bg-slate-300 px-4 py-3 md:py-2 rounded-lg font-bold transition-colors text-sm md:text-base flex items-center justify-center gap-1 shadow-sm" disabled>
+                    <span class="text-lg leading-none">👈</span> 이전 단계
+                </button>
+                <button id="next-btn" class="flex-1 bg-indigo-600 text-white hover:bg-indigo-700 px-4 py-3 md:py-2 rounded-lg font-bold transition-colors shadow-md text-sm md:text-base flex items-center justify-center gap-1">
+                    다음 단계 <span class="text-lg leading-none">👉</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="relative w-full flex-grow bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+            <canvas id="graph-canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+            
+            <div id="loading-overlay" class="absolute inset-0 bg-white/40 backdrop-blur-[2px] flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-300">
+                <div class="bg-slate-800 text-white px-5 py-2.5 rounded-full font-semibold shadow-lg flex items-center gap-2">
+                    <span class="animate-pulse">🏃</span> 중심점 이동 중...
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('graph-canvas');
+        const ctx = canvas.getContext('2d');
+        const nextBtn = document.getElementById('next-btn');
+        const prevBtn = document.getElementById('prev-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const instructionText = document.getElementById('instruction-text');
+        const stepBadge = document.getElementById('step-badge');
+        const legendSquare = document.getElementById('legend-square');
+        const loadingOverlay = document.getElementById('loading-overlay');
+
+        const PHASES = {
+            INIT: 'INIT',
+            STEP1: 'STEP1',
+            STEP2: 'STEP2',
+            STEP3: 'STEP3',
+            STEP4: 'STEP4',
+            STEP5: 'STEP5',
+            DONE: 'DONE'
+        };
+
+        const TEXTS = {
+            [PHASES.INIT]: "준비: 데이터가 흩어져 있습니다.",
+            [PHASES.STEP1]: "1단계: 데이터 중에 임의의 점 두 개를 선택한다.",
+            [PHASES.STEP2]: "2단계: 모든 데이터에 대해 그 임의의 점 두 개와의 거리를 구한다.",
+            [PHASES.STEP3]: "3단계: 두 점 중에 가까운 점을 중심으로 군집을 형성한다.",
+            [PHASES.STEP4]: "4단계: 두 개 군집의 중심점을 기준으로 모든 데이터와의 거리를 다시 구한다. (중심점 이동)",
+            [PHASES.STEP5]: "5단계: 두 점 중에 가까운 점을 중심으로 군집을 재형성한다.\n(💡 이전과 비교해 소속 군집이 바뀐 데이터는 사각형 ◼ 으로 표시됩니다)",
+            [PHASES.DONE]: "6단계: 이 과정을 반복하여 더 이상 중심점이 변하지 않아 군집이 확정되었다! 🎉"
+        };
+
+        const COLORS = { GRAY: '#cbd5e1', RED: '#ef4444', BLUE: '#3b82f6' };
+        const NUM_POINTS = 45;
+        
+        let canvasWidth, canvasHeight;
+        
+        // 상태 히스토리 배열
+        let stateHistory = [];
+        
+        // 현재 상태 객체
+        let currentState = {
+            phase: PHASES.INIT,
+            points: [], // {x, y, clusterIdx, shape: 'circle'|'square', color}
+            centroids: [], // {x, y, color}
+            targetCentroids: [], // 애니메이션 목표 위치
+            drawMode: 'NONE', // 'NONE', 'ALL', 'ASSIGNED'
+            isAnimating: false
+        };
+
+        function resizeCanvas() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvasWidth = rect.width;
+            canvasHeight = rect.height;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = canvasWidth * dpr;
+            canvas.height = canvasHeight * dpr;
+            ctx.scale(dpr, dpr);
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+
+        // 초기 데이터 생성 함수
+        function generateData() {
+            stateHistory = [];
+            currentState = {
+                phase: PHASES.INIT,
+                points: [],
+                centroids: [],
+                targetCentroids: [],
+                drawMode: 'NONE',
+                isAnimating: false
+            };
+
+            const centers = [ {x: 0.25, y: 0.3}, {x: 0.75, y: 0.7}, {x: 0.6, y: 0.3} ];
+            
+            for(let i=0; i<NUM_POINTS; i++) {
+                const center = centers[Math.floor(Math.random() * centers.length)];
+                let x = center.x + (Math.random() - 0.5) * 0.4;
+                let y = center.y + (Math.random() - 0.5) * 0.4;
+                x = Math.max(0.05, Math.min(0.95, x));
+                y = Math.max(0.05, Math.min(0.95, y));
+
+                currentState.points.push({
+                    x: x, y: y, 
+                    clusterIdx: -1, 
+                    shape: 'circle', 
+                    color: COLORS.GRAY
+                });
+            }
+            updateUI();
+        }
+
+        function goNext() {
+            if (currentState.isAnimating) return;
+
+            // 현재 상태를 복사하여 히스토리에 저장 (애니메이션 상태는 해제하여 정적인 상태로 저장)
+            const stateToSave = JSON.parse(JSON.stringify(currentState));
+            stateToSave.isAnimating = false;
+            stateHistory.push(stateToSave);
+
+            // 다음 상태를 위한 복제본 생성
+            let nextState = JSON.parse(JSON.stringify(currentState));
+            // 사각형(바뀐 상태)은 다음 단계로 넘어가면 기본값(원)으로 초기화 준비
+            if(nextState.phase !== PHASES.STEP4) {
+                 nextState.points.forEach(p => p.shape = 'circle');
+            }
+
+            switch(currentState.phase) {
+                case PHASES.INIT:
+                    // 1단계: 임의의 2점 선택
+                    let p1 = Math.floor(Math.random() * NUM_POINTS);
+                    let p2 = Math.floor(Math.random() * NUM_POINTS);
+                    while(p1 === p2 || Math.hypot(nextState.points[p1].x - nextState.points[p2].x, nextState.points[p1].y - nextState.points[p2].y) < 0.2) {
+                        p2 = Math.floor(Math.random() * NUM_POINTS);
+                    }
+                    nextState.centroids = [
+                        { x: nextState.points[p1].x, y: nextState.points[p1].y, color: COLORS.RED },
+                        { x: nextState.points[p2].x, y: nextState.points[p2].y, color: COLORS.BLUE }
+                    ];
+                    nextState.phase = PHASES.STEP1;
+                    nextState.drawMode = 'NONE';
+                    break;
+
+                case PHASES.STEP1:
+                    // 2단계: 거리 계산 (모든 중심점과의 선)
+                    nextState.phase = PHASES.STEP2;
+                    nextState.drawMode = 'ALL';
+                    break;
+
+                case PHASES.STEP2:
+                    // 3단계: 할당
+                    nextState.points.forEach(p => {
+                        const d0 = Math.hypot(p.x - nextState.centroids[0].x, p.y - nextState.centroids[0].y);
+                        const d1 = Math.hypot(p.x - nextState.centroids[1].x, p.y - nextState.centroids[1].y);
+                        p.clusterIdx = d0 < d1 ? 0 : 1;
+                        p.color = nextState.centroids[p.clusterIdx].color;
+                        p.shape = 'circle';
+                    });
+                    nextState.phase = PHASES.STEP3;
+                    nextState.drawMode = 'ASSIGNED';
+                    break;
+
+                case PHASES.STEP3:
+                case PHASES.STEP5:
+                    // 4단계: 중심점 평균 위치 구하고 이동시키기
+                    nextState.targetCentroids = JSON.parse(JSON.stringify(nextState.centroids));
+                    
+                    [0, 1].forEach(cIdx => {
+                        const clusterPts = nextState.points.filter(p => p.clusterIdx === cIdx);
+                        if(clusterPts.length > 0) {
+                            const sumX = clusterPts.reduce((sum, p) => sum + p.x, 0);
+                            const sumY = clusterPts.reduce((sum, p) => sum + p.y, 0);
+                            nextState.targetCentroids[cIdx].x = sumX / clusterPts.length;
+                            nextState.targetCentroids[cIdx].y = sumY / clusterPts.length;
+                        }
+                    });
+
+                    nextState.phase = PHASES.STEP4;
+                    nextState.drawMode = 'ALL'; // 다시 거리를 구한다는 의미로 모든 선 표시
+                    nextState.isAnimating = true;
+                    break;
+
+                case PHASES.STEP4:
+                    // 5단계: 새로운 중심점 기준으로 재할당 & 사각형 처리
+                    let changedCount = 0;
+                    
+                    nextState.points.forEach(p => {
+                        const d0 = Math.hypot(p.x - nextState.centroids[0].x, p.y - nextState.centroids[0].y);
+                        const d1 = Math.hypot(p.x - nextState.centroids[1].x, p.y - nextState.centroids[1].y);
+                        const newCluster = d0 < d1 ? 0 : 1;
+                        
+                        if (p.clusterIdx !== newCluster) {
+                            changedCount++;
+                            p.shape = 'square'; // 소속이 바뀐 데이터는 사각형!
+                        } else {
+                            p.shape = 'circle';
+                        }
+                        
+                        p.clusterIdx = newCluster;
+                        p.color = nextState.centroids[newCluster].color;
+                    });
+
+                    nextState.drawMode = 'ASSIGNED';
+
+                    if (changedCount > 0) {
+                        nextState.phase = PHASES.STEP5;
+                    } else {
+                        // 바뀐 점이 없으면 확정(DONE)
+                        nextState.phase = PHASES.DONE;
+                        nextState.points.forEach(p => p.shape = 'circle'); // 끝났으니 깔끔하게 원으로 통일
+                    }
+                    break;
+            }
+
+            currentState = nextState;
+            updateUI();
+        }
+
+        function goPrev() {
+            if (stateHistory.length === 0 || currentState.isAnimating) return;
+            // 배열에서 가장 최근 과거 상태를 꺼내 현재 상태로 덮어씌움 (완벽 복원)
+            currentState = stateHistory.pop();
+            updateUI();
+        }
+
+        function updateUI() {
+            instructionText.innerText = TEXTS[currentState.phase];
+            
+            // 배지 텍스트 업데이트
+            if(currentState.phase === PHASES.INIT) stepBadge.innerText = "준비 단계";
+            else if(currentState.phase.startsWith('STEP')) stepBadge.innerText = currentState.phase.replace('STEP', '') + "단계";
+            else if(currentState.phase === PHASES.DONE) stepBadge.innerText = "6단계 (완료)";
+
+            // 범례(사각형) 노출 여부
+            if(currentState.phase === PHASES.STEP5) {
+                legendSquare.classList.remove('hidden');
+                legendSquare.classList.add('flex');
+            } else {
+                legendSquare.classList.add('hidden');
+                legendSquare.classList.remove('flex');
+            }
+
+            // 완료 상태 배지 색상 변경
+            if (currentState.phase === PHASES.DONE) {
+                stepBadge.classList.replace('bg-indigo-100', 'bg-emerald-100');
+                stepBadge.classList.replace('text-indigo-700', 'text-emerald-700');
+            } else {
+                stepBadge.classList.replace('bg-emerald-100', 'bg-indigo-100');
+                stepBadge.classList.replace('text-emerald-700', 'text-indigo-700');
+            }
+
+            // 버튼 활성화/비활성화 처리
+            prevBtn.disabled = stateHistory.length === 0 || currentState.isAnimating;
+            nextBtn.disabled = currentState.phase === PHASES.DONE || currentState.isAnimating;
+            resetBtn.disabled = currentState.isAnimating;
+
+            if (currentState.isAnimating) {
+                loadingOverlay.classList.remove('opacity-0');
+            } else {
+                loadingOverlay.classList.add('opacity-0');
+            }
+        }
+
+        // 별 그리기 함수
+        function drawStar(cx, cy, color) {
+            const spikes = 5, outerRadius = 16, innerRadius = 7;
+            let rot = Math.PI / 2 * 3;
+            let x = cx, y = cy, step = Math.PI / spikes;
+
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - outerRadius);
+            for (let i = 0; i < spikes; i++) {
+                x = cx + Math.cos(rot) * outerRadius;
+                y = cy + Math.sin(rot) * outerRadius;
+                ctx.lineTo(x, y);
+                rot += step;
+                x = cx + Math.cos(rot) * innerRadius;
+                y = cy + Math.sin(rot) * innerRadius;
+                ctx.lineTo(x, y);
+                rot += step;
+            }
+            ctx.closePath();
+            ctx.shadowColor = 'rgba(0,0,0,0.4)';
+            ctx.shadowBlur = 8;
+            ctx.shadowOffsetY = 4;
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = '#fff';
+            ctx.stroke();
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+        }
+
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+            // 중심점 이동 애니메이션 처리
+            if (currentState.isAnimating) {
+                let allArrived = true;
+                currentState.centroids.forEach((c, idx) => {
+                    const target = currentState.targetCentroids[idx];
+                    const dx = target.x - c.x;
+                    const dy = target.y - c.y;
+                    
+                    c.x += dx * 0.08; // 부드러운 감속 이동
+                    c.y += dy * 0.08;
+
+                    // 화면 픽셀 기준으로 도착 판정
+                    if (Math.abs(dx * canvasWidth) > 0.5 || Math.abs(dy * canvasHeight) > 0.5) {
+                        allArrived = false;
+                    } else {
+                        c.x = target.x;
+                        c.y = target.y;
+                    }
+                });
+
+                if (allArrived) {
+                    currentState.isAnimating = false;
+                    updateUI();
+                }
+            }
+
+            // 1. 연결 선 그리기
+            if (currentState.drawMode === 'ALL') {
+                currentState.points.forEach(p => {
+                    currentState.centroids.forEach(c => {
+                        ctx.beginPath();
+                        ctx.moveTo(p.x * canvasWidth, p.y * canvasHeight);
+                        ctx.lineTo(c.x * canvasWidth, c.y * canvasHeight);
+                        ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    });
+                });
+            } else if (currentState.drawMode === 'ASSIGNED') {
+                currentState.points.forEach(p => {
+                    if (p.clusterIdx !== -1 && currentState.centroids[p.clusterIdx]) {
+                        const c = currentState.centroids[p.clusterIdx];
+                        ctx.beginPath();
+                        ctx.moveTo(p.x * canvasWidth, p.y * canvasHeight);
+                        ctx.lineTo(c.x * canvasWidth, c.y * canvasHeight);
+                        ctx.strokeStyle = p.clusterIdx === 0 ? 'rgba(239,68,68,0.2)' : 'rgba(59,130,246,0.2)';
+                        ctx.lineWidth = 1.5;
+                        ctx.stroke();
+                    }
+                });
+            }
+
+            // 2. 데이터 점(원 또는 사각형) 그리기
+            currentState.points.forEach(p => {
+                ctx.beginPath();
+                const px = p.x * canvasWidth;
+                const py = p.y * canvasHeight;
+                
+                if (p.shape === 'square') {
+                    // 군집이 바뀐 데이터는 사각형! (크기를 약간 키워 눈에 띄게)
+                    const size = 7;
+                    ctx.rect(px - size, py - size, size * 2, size * 2);
+                } else {
+                    // 일반 데이터는 원
+                    ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+                }
+                
+                ctx.fillStyle = p.color;
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            });
+
+            // 3. 중심점 그리기
+            currentState.centroids.forEach(c => {
+                drawStar(c.x * canvasWidth, c.y * canvasHeight, c.color);
+            });
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 이벤트 리스너 세팅 및 시작
+        nextBtn.addEventListener('click', goNext);
+        prevBtn.addEventListener('click', goPrev);
+        resetBtn.addEventListener('click', generateData);
+
+        window.onload = () => {
+            resizeCanvas();
+            generateData();
+            gameLoop();
+        };
+
+    </script>
+</body>
+</html>
